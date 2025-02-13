@@ -1,369 +1,340 @@
 import streamlit as st
-import asyncio
 import aiohttp
-import os
-import nest_asyncio
-import pandas as pd
+import asyncio
 import json
-import ast
-import re
+import time
+import pandas as pd
 from dotenv import load_dotenv
-from rapidfuzz import fuzz
+import os
+from datetime import datetime, timedelta
 
-# Configure the page for full-screen (wide) layout
-st.set_page_config(layout="wide", page_title="Top Stories Monitor")
+# Configure the page
+st.set_page_config(
+    page_title="Crypto News Monitor",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# Allow nested event loops (useful in Streamlit)
-nest_asyncio.apply()
-
-# ------------------------------
-# Global Debug Flag: Set to True to show warnings; False to hide them.
-# ------------------------------
-DEBUG = False
-
-def log_warning(message):
-    if DEBUG:
-        st.warning(message)
-    else:
-        print("Warning:", message)
-
-# ------------------------------
-# Environment Setup and Config
-# ------------------------------
+# Load environment variables
 load_dotenv()
-SERPAPI_API_KEY = os.getenv('SERP_API_KEY')
-OPENROUTER_URL = os.getenv('OPENROUTER_URL', "https://openrouter.ai/api/v1/chat/completions")
-OPENROUTER_API_KEY = os.getenv('OPENROUTER_API_KEY')
-DEFAULT_MODEL = "qwen/qwen-turbo"  # Adjust as needed
+SERP_API_KEY = os.getenv('SERP_API_KEY')
 
-# ------------------------------
-# OpenRouter LLM Call Function with Concurrency Control
-# ------------------------------
-openrouter_semaphore = asyncio.Semaphore(5)
+# Default crypto keywords
+DEFAULT_CRYPTO_KEYWORDS = ["XRP", "Bitcoin", "Ethereum", "Dogecoin", "Solana", "BNB"]
 
-async def call_openrouter_llm(prompt: str) -> str:
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "X-Title": "OpenDeepResearcher, by Mali",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": DEFAULT_MODEL,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ]
-    }
-    async with openrouter_semaphore:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(OPENROUTER_URL, headers=headers, json=payload) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        try:
-                            await asyncio.sleep(0.3)
-                            return result['choices'][0]['message']['content']
-                        except (KeyError, IndexError) as e:
-                            log_warning("Unexpected OpenRouter response structure:" + str(result))
-                            return ""
-                    else:
-                        text = await resp.text()
-                        log_warning(f"OpenRouter API error: {resp.status} - {text}")
-                        return ""
-        except Exception as e:
-            log_warning("Error calling OpenRouter: " + str(e))
-            return ""
+# Define locations
+LOCATIONS = {"US": "us", "UK": "uk", "Germany": "de", "Netherlands": "nl"}
 
-# ------------------------------
-# Asynchronous Helper Functions
-# ------------------------------
-def get_predefined_variations(base_query: str) -> list:
-    coin = base_query.strip().lower()
-    mapping = {
-        "bitcoin": ["Bitcoin", "BTC", "Bitcoin Price News", "Bitcoin News"],
-        "xrp": ["XRP", "XRP news", "Ripple"],
-        "ethereum": ["Ethereum", "ETH", "Ethereum news"],
-        "dogecoin": ["Dogecoin", "DOGE", "Dogecoin news", "Dogecoin price prediction"]
-    }
-    return mapping.get(coin, None)
+# Persistence files
+RESULTS_FILE = "results.json"
+CONFIG_FILE = "config.json"
 
-async def generate_alternate_queries_async(base_query: str) -> list:
-    predefined = get_predefined_variations(base_query)
-    if predefined:
-        st.write(f"Using predefined variations for {base_query}: {predefined}")
-        return predefined
-    else:
-        prompt = (
-            f"Rewrite the query '{base_query}' into at least three distinct search queries that capture different angles. "
-            "Return your answer as a JSON array of strings with no additional text. For example: "
-            f"[\"{base_query} news\", \"{base_query} price\", \"{base_query} analysis\"]"
-        )
-        result = await call_openrouter_llm(prompt)
-        st.write("Raw output for alternate queries:", result)
-        try:
-            queries = json.loads(result.strip())
-            if isinstance(queries, list) and len(queries) >= 3:
-                return queries
-            else:
-                log_warning("OpenRouter did not return at least three queries. Using the base query as fallback.")
-                return [base_query]
-        except Exception as e:
-            log_warning(f"Error parsing alternate queries: {e}. Using the base query.")
-            return [base_query]
+def load_config():
+    """Load configuration from file."""
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"last_run": None}
+
+def save_config(config):
+    """Save configuration to file."""
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+
+def load_persisted_results():
+    """Load persisted results from local file (if exists)."""
+    try:
+        with open(RESULTS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def save_persisted_results(results):
+    """Save results to local file."""
+    with open(RESULTS_FILE, "w") as f:
+        json.dump(results, f, indent=2)
 
 async def perform_search_async(query: str, location: str) -> list:
+    """Query SERPAPI for a given query and location."""
     params = {
         "q": query,
-        "api_key": SERPAPI_API_KEY,
+        "api_key": SERP_API_KEY,
         "engine": "google",
         "gl": location,
         "hl": "en",
-        "tbs": "qdr:d",
+        "tbs": "qdr:d",  # news from the past day
         "sort": "date",
         "num": 10
     }
+    url = "https://serpapi.com/search"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("https://serpapi.com/search", params=params) as resp:
+            async with session.get(url, params=params) as resp:
                 if resp.status == 200:
                     results = await resp.json()
                     output = []
                     if "organic_results" in results:
                         for item in results["organic_results"]:
-                            link = item.get("link")
-                            position = item.get("position", "N/A")
+                            link = item.get("link", "")
+                            position = item.get("position", None)
                             title = item.get("title", "")
-                            output.append({"link": link, "position": position, "title": title})
-                        return output[:5]
-                    else:
-                        return []
+                            # Filter out unwanted domains
+                            if any(bad in link for bad in ["reddit.com", "youtube.com", "wikipedia.org", "airbnb.co.uk", "airbnb.com", "yahoo.com", "x.com"]):
+                                continue
+                            # Only include results with SERP positions 1 or 2
+                            try:
+                                pos_int = int(position)
+                                if pos_int not in (1, 2):
+                                    continue
+                            except Exception:
+                                continue
+                            output.append({
+                                "Timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "Country": None,
+                                "Crypto": None,
+                                "Keyword": query,
+                                "Position": position,
+                                "Title": title,
+                                "URL": link
+                            })
+                    return output
                 else:
                     st.error(f"SERPAPI error: {resp.status}")
                     return []
     except Exception as e:
-        st.error(f"Search error for location {location}: {e}")
+        st.error(f"Error performing search: {e}")
         return []
 
-async def translate_title(title: str) -> str:
-    prompt = f"Translate the following title into English: \"{title}\". Only return the translated title."
-    result = await call_openrouter_llm(prompt)
-    return result.strip()
+def deduplicate_results(new_results, persisted):
+    """Remove duplicates based on URL."""
+    persisted_urls = {item["URL"] for item in persisted}
+    return [res for res in new_results if res["URL"] not in persisted_urls]
 
-# ------------------------------
-# Grouping Functionality using Fuzzy Matching
-# ------------------------------
-def normalize_title(title: str) -> str:
-    title = title.lower()
-    title = re.sub(r'[^a-z0-9\s]', '', title)
-    return title.strip()
+async def run_monitoring_job(selected_cryptos, selected_locations):
+    """Run the monitoring job with selected cryptocurrencies and locations."""
+    all_results = []
+    progress_bar = st.progress(0)
+    total_combinations = len(selected_cryptos) * len(selected_locations)
+    current_progress = 0
 
-def group_articles(rows, similarity_threshold=55):
-    groups = []
-    assigned = set()
-    for i, row in enumerate(rows):
-        if i in assigned:
-            continue
-        current_group = [i]
-        assigned.add(i)
-        title_i = normalize_title(row["Title (English)"])
-        for j in range(i+1, len(rows)):
-            if j in assigned:
-                continue
-            title_j = normalize_title(rows[j]["Title (English)"])
-            score = fuzz.token_set_ratio(title_i, title_j)
-            if score >= similarity_threshold:
-                current_group.append(j)
-                assigned.add(j)
-        groups.append(current_group)
-    return groups
+    for crypto in selected_cryptos:
+        for loc_name, loc_code in selected_locations.items():
+            results = await perform_search_async(crypto, loc_code)
+            # Annotate results with country and crypto info
+            for res in results:
+                res["Country"] = loc_name
+                res["Crypto"] = crypto
+            all_results.extend(results)
+            
+            # Update progress
+            current_progress += 1
+            progress_bar.progress(current_progress / total_combinations)
 
-def select_top_article(rows, group):
-    best_index = group[0]
-    best_position = float('inf')
-    for i in group:
-        try:
-            pos = float(rows[i]["Position"])
-        except ValueError:
-            pos = float('inf')
-        if pos < best_position:
-            best_position = pos
-            best_index = i
-    return best_index
+    # Deduplicate by URL
+    unique_results = {res["URL"]: res for res in all_results}.values()
+    unique_results = list(unique_results)
 
-# ------------------------------
-# New Function: Select Overall Top Articles
-# ------------------------------
-async def select_top_articles(articles: list, top_n: int = 7) -> list:
-    """
-    Given a list of article dictionaries (each representing a top article from a group),
-    prepare a summary and ask OpenRouter to select the top_n overall articles.
-    If the LLM returns an empty or unparseable result, fall back to sorting by SERP position.
-    Returns a list (with at most top_n objects) of selected articles with an added key 'Reason'.
-    """
-    if not articles:
-        return []
+    # Load previously persisted results
+    persisted = load_persisted_results()
+
+    # Find new results not already persisted
+    new_results = deduplicate_results(unique_results, persisted)
+
+    if new_results:
+        st.success(f"Found {len(new_results)} new result(s)")
+    else:
+        st.info("No new results found")
+
+    # Save updated results
+    updated_results = persisted + new_results
+    save_persisted_results(updated_results)
+
+    return new_results, updated_results
+
+def initialize_session_state():
+    """Initialize session state variables."""
+    # Load saved config
+    config = load_config()
     
-    summary_lines = []
-    for article in articles:
-        line = (
-            f"Country: {article.get('Country')}, "
-            f"Keyword: {article.get('Keyword')}, "
-            f"Position: {article.get('Position')}, "
-            f"Title: {article.get('Title (English)')}, "
-            f"Star Story: {article.get('Star Story?')}"
-        )
-        summary_lines.append(line)
-    summary_text = "\n".join(summary_lines)
+    if 'last_run' not in st.session_state:
+        st.session_state.last_run = config.get('last_run')
+    if 'selected_cryptos' not in st.session_state:
+        st.session_state.selected_cryptos = DEFAULT_CRYPTO_KEYWORDS
+    if 'selected_locations' not in st.session_state:
+        st.session_state.selected_locations = list(LOCATIONS.keys())
+
+def get_time_since_last_run():
+    """Get a formatted string of time since last run."""
+    if not st.session_state.last_run:
+        return "Never"
     
-    prompt = (
-        f"Below is a list of top articles from different groups. Each line describes an article with details: "
-        f"Country, Keyword, SERP position (lower is better), Title, and whether it is a Star Story (appears multiple times).\n\n"
-        f"{summary_text}\n\n"
-        f"Based on this information, please select the top {top_n} most important news articles for editorial assignment. "
-        "Choose one primary article per major event if applicable, and provide a brief reason why that article was selected. "
-        "Return your answer as a JSON array of objects, where each object has the keys: 'Country', 'Keyword', 'Position', "
-        "'Title (English)', 'URL', and 'Reason'. Only return the JSON array."
-    )
-    result = await call_openrouter_llm(prompt)
     try:
-        selected = json.loads(result.strip())
-        if isinstance(selected, list) and len(selected) > 0:
-            return selected[:top_n]
-        else:
-            raise ValueError("Empty selection")
-    except Exception as e:
-        log_warning(f"Error parsing top article selection: {e}")
-        # Fallback: sort the articles by SERP position and return top_n articles.
-        try:
-            sorted_articles = sorted(articles, key=lambda x: float(x.get("Position", float('inf'))))
-        except Exception as e:
-            sorted_articles = articles
-        fallback = sorted_articles[:top_n]
-        for article in fallback:
-            article["Reason"] = "Fallback selection based on SERP position"
-        return fallback
+        # Convert string to datetime if needed
+        last_run = st.session_state.last_run
+        if isinstance(last_run, str):
+            last_run = datetime.strptime(last_run, "%Y-%m-%d %H:%M:%S")
+        
+        time_diff = datetime.now() - last_run
+        hours = int(time_diff.total_seconds() / 3600)
+        minutes = int((time_diff.total_seconds() % 3600) / 60)
+        
+        if hours > 0:
+            return f"{hours} hours {minutes} minutes ago"
+        return f"{minutes} minutes ago"
+    except Exception:
+        return "Never"
 
-# ------------------------------
-# Main Asynchronous Routine for a Single Keyword
-# ------------------------------
-async def run_monitoring(base_query: str):
-    locations = {"US": "us", "UK": "uk", "Germany": "de", "Netherlands": "nl"}
-    alternate_queries = await generate_alternate_queries_async(base_query)
-    st.write(f"Alternate queries generated for {base_query}: {alternate_queries}")
-    
-    aggregated_results = []
-    for loc_name, loc_code in locations.items():
-        for query in alternate_queries:
-            search_results = await perform_search_async(query, loc_code)
-            for res in search_results:
-                row = {
-                    "Country": loc_name,
-                    "Keyword": query,
-                    "Position": res.get("position"),
-                    "URL": res.get("link"),
-                    "SERP Title": res.get("title")
-                }
-                aggregated_results.append(row)
-    
-    async def enrich_row(row):
-        translated_title = await translate_title(row["SERP Title"])
-        row["Title (English)"] = translated_title if translated_title else row["SERP Title"]
-        return row
-
-    enriched_rows = await asyncio.gather(*(enrich_row(row) for row in aggregated_results))
-    
-    # Determine Star Story status based on duplicate URLs
-    url_counts = {}
-    for row in enriched_rows:
-        url = row["URL"]
-        url_counts[url] = url_counts.get(url, 0) + 1
-    for row in enriched_rows:
-        row["Star Story?"] = "Yes" if url_counts.get(row["URL"], 0) > 1 else "No"
-    
-    # Group similar articles using fuzzy matching on "Title (English)"
-    groups = group_articles(enriched_rows, similarity_threshold=55)
-    st.write("Article groups (by row indices):", groups)
-    
-    # Assign group labels
-    for group_id, group in enumerate(groups, start=1):
-        for idx in group:
-            enriched_rows[idx]["Group"] = f"Group {group_id}"
-    
-    # Create assignment summary: select top article (lowest SERP position) per group
-    assignment_summary = []
-    for group in groups:
-        top_idx = select_top_article(enriched_rows, group)
-        assignment_summary.append(enriched_rows[top_idx])
-    
-    # Use the LLM to select overall top articles from the assignment summary
-    top_articles = await select_top_articles(assignment_summary, top_n=7)
-    
-    # Prepare final rows for display
-    final_rows = []
-    for row in enriched_rows:
-        final_rows.append({
-            "Country": row["Country"],
-            "Keyword": row["Keyword"],
-            "Position": row["Position"],
-            "Title (English)": row["Title (English)"],
-            "URL": row["URL"],
-            "Star Story?": row["Star Story?"],
-            "Group": row.get("Group", ""),
-            "Owner": ""  # leave blank
-        })
-    
-    return final_rows, assignment_summary, top_articles
-
-# ------------------------------
-# Main Routine for Multiple Keywords
-# ------------------------------
-async def run_monitoring_multiple(keywords: list):
-    all_rows = []
-    assignment_all = []
-    top_all = []
-    for crypto in keywords:
-        rows, assignment_summary, top_articles = await run_monitoring(crypto.strip())
-        for row in rows:
-            row["Crypto"] = crypto.strip()
-        all_rows.extend(rows)
-        for row in assignment_summary:
-            row["Crypto"] = crypto.strip()
-        assignment_all.extend(assignment_summary)
-        for row in top_articles:
-            row["Crypto"] = crypto.strip()
-        top_all.extend(top_articles)
-    return all_rows, assignment_all, top_all
-
-# ------------------------------
-# Streamlit Interface
-# ------------------------------
 def main():
-    st.title("Top Stories Monitor")
-    st.write(
-        "This full-screen app monitors top Google news stories for one or more cryptocurrencies from the US, UK, Germany, and Netherlands (articles published today). "
-        "For each result, it translates the article title into English and displays the following columns:\n\n"
-        "Country | Keyword | Position | Title (English) | URL | Star Story? | Group | Owner\n\n"
-        "Articles appearing under more than one query variant are marked as a Star Story. "
-        "Similar articles are grouped together. An assignment summary is provided below to help you pick the top article from each group, "
-        "and an overall top-7 selection is also provided."
-    )
+    st.markdown("Top News Monitor")
     
-    crypto_input = st.text_input("Enter crypto keywords (comma separated)", value="XRP")
-    keywords = [k.strip() for k in crypto_input.split(",") if k.strip()]
+    # Initialize session state
+    initialize_session_state()
     
-    if st.button("Run Monitoring"):
-        with st.spinner("Fetching and processing data..."):
-            table_data, assignment_summary, top_articles = asyncio.run(run_monitoring_multiple(keywords))
-        st.success("Monitoring complete!")
-        df = pd.DataFrame(table_data)
-        st.dataframe(df)
+    # Create columns for the controls
+    col1, col2, col3 = st.columns([2, 2, 1])
+    
+    with col1:
+        # Multi-select for cryptocurrencies
+        st.session_state.selected_cryptos = st.multiselect(
+            "Select Cryptocurrencies",
+            DEFAULT_CRYPTO_KEYWORDS,
+            default=st.session_state.selected_cryptos
+        )
         
-        st.subheader("Assignment Summary (Top Article per Group)")
-        df_assign = pd.DataFrame(assignment_summary)
-        st.dataframe(df_assign)
-        
-        st.subheader("Overall Top 7 Selection")
-        df_top = pd.DataFrame(top_articles)
-        st.dataframe(df_top)
+    with col2:
+        # Multi-select for locations
+        st.session_state.selected_locations = st.multiselect(
+            "Select Locations",
+            list(LOCATIONS.keys()),
+            default=st.session_state.selected_locations
+        )
+    
+    with col3:
+        st.write("")  # Add some spacing
+        st.write("")  # Add some spacing
+        run_button = st.button("🔄 Run Monitor", use_container_width=True)
+    
+    # Load and display previous results
+    all_results = load_persisted_results()
+    
+    # Display results in tabs (All Results first)
+    tab1, tab2 = st.tabs(["All Results", "New Results"])
+    
+    def display_results(results, empty_message):
+        if results:
+            # Create DataFrame and order columns
+            df = pd.DataFrame(results)
+            column_order = [
+                "Timestamp", "Crypto", "Country", "Position",
+                "Title", "URL", "Keyword"
+            ]
+            df = df[column_order]
+            
+            # Configure and display the dataframe
+            st.dataframe(
+                df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "URL": st.column_config.LinkColumn(
+                        "URL",
+                        width="medium",
+                        help="Click to open article"
+                    ),
+                    "Title": st.column_config.TextColumn(
+                        "Title",
+                        width="large",
+                        help="Article title"
+                    ),
+                    "Timestamp": st.column_config.DatetimeColumn(
+                        "Time",
+                        format="D MMM, HH:mm",
+                        width="small"
+                    ),
+                    "Position": st.column_config.NumberColumn(
+                        "Pos",
+                        width="small"
+                    ),
+                    "Crypto": st.column_config.TextColumn(
+                        "Crypto",
+                        width="small"
+                    ),
+                    "Country": st.column_config.TextColumn(
+                        "Region",
+                        width="small"
+                    ),
+                    "Keyword": st.column_config.TextColumn(
+                        "Search Term",
+                        width="small"
+                    )
+                }
+            )
+        else:
+            st.info(empty_message)
+    
+    # Display all results first
+    with tab1:
+        display_results(all_results, "No results found")
+    
+    with tab2:
+        st.info("Run the monitor to see new results")
+    
+    # Display last run time and warning
+    last_run_time = get_time_since_last_run()
+    
+    if st.session_state.last_run:
+        try:
+            last_run = st.session_state.last_run
+            if isinstance(last_run, str):
+                last_run = datetime.strptime(last_run, "%Y-%m-%d %H:%M:%S")
+            time_diff = datetime.now() - last_run
+            hours_since_last_run = time_diff.total_seconds() / 3600
+            
+            if hours_since_last_run < 2:
+                st.warning(
+                    f"⏱️ Last run: {last_run_time}\n\n"
+                    "⚠️ Running too frequently may use up SERP credits. We recommend waiting at least 2 hours between runs."
+                )
+            else:
+                st.info(f"⏱️ Last run: {last_run_time}")
+        except Exception:
+            st.info(f"⏱️ Last run: {last_run_time}")
+    else:
+        st.info("⏱️ Last run: Never")
+    
+    # Convert selected locations to the format needed
+    selected_locations_dict = {k: LOCATIONS[k] for k in st.session_state.selected_locations}
+    
+    if run_button:
+        if not SERP_API_KEY:
+            st.error("SERP API key not found. Please check your .env file.")
+            return
+            
+        if not st.session_state.selected_cryptos:
+            st.warning("Please select at least one cryptocurrency.")
+            return
+            
+        if not st.session_state.selected_locations:
+            st.warning("Please select at least one location.")
+            return
+            
+        with st.spinner("Running monitoring job..."):
+            new_results, all_results = asyncio.run(
+                run_monitoring_job(st.session_state.selected_cryptos, selected_locations_dict)
+            )
+            
+            # Update and save last run time
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.last_run = current_time
+            save_config({"last_run": current_time})
+            
+            # Update the tabs with new results
+            with tab1:
+                display_results(all_results, "No results found")
+                    
+            with tab2:
+                display_results(new_results, "No new results in this run")
 
 if __name__ == "__main__":
     main()
