@@ -185,9 +185,7 @@ def get_time_since_last_run():
     except Exception:
         return "Never"
 
-def main():
-    st.title("Crypto News Monitor")
-    
+def main():    
     # Initialize session state
     initialize_session_state()
     
