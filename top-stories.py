@@ -80,7 +80,7 @@ async def perform_search_async(query: str, location: str) -> list:
                             position = item.get("position", None)
                             title = item.get("title", "")
                             # Filter out unwanted domains
-                            if any(bad in link for bad in ["reddit.com", "youtube.com", "wikipedia.org", "airbnb.co.uk", "airbnb.com", "yahoo.com", "x.com"]):
+                            if any(bad in link for bad in ["reddit.com", "youtube.com", "wikipedia.org", "airbnb.co.uk", "airbnb.com", "yahoo.com", "x.com", "twitter.com"]):
                                 continue
                             # Only include results with SERP positions 1 or 2
                             try:
@@ -186,7 +186,7 @@ def get_time_since_last_run():
         return "Never"
 
 def main():
-    st.markdown("Top News Monitor")
+    st.title("Crypto News Monitor")
     
     # Initialize session state
     initialize_session_state()
@@ -213,7 +213,7 @@ def main():
     with col3:
         st.write("")  # Add some spacing
         st.write("")  # Add some spacing
-        run_button = st.button("🔄 Run Monitor", use_container_width=True)
+        run_button = st.button("Run Monitor", type="primary", use_container_width=True)
     
     # Load and display previous results
     all_results = load_persisted_results()
