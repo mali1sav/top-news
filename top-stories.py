@@ -185,7 +185,9 @@ def get_time_since_last_run():
     except Exception:
         return "Never"
 
-def main():    
+def main():
+    st.title("Crypto News Monitor")
+    
     # Initialize session state
     initialize_session_state()
     
@@ -251,7 +253,7 @@ def main():
                         width="small"
                     ),
                     "Position": st.column_config.NumberColumn(
-                        "Pos",
+                        "Position",
                         width="small"
                     ),
                     "Crypto": st.column_config.TextColumn(
