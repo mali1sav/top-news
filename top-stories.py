@@ -186,7 +186,7 @@ def get_time_since_last_run():
         return "Never"
 
 def main():
-    st.title("Crypto News Monitor")
+    st.title("Top Stories Monitor")
     
     # Initialize session state
     initialize_session_state()
