@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 # Configure the page
 st.set_page_config(
-    page_title="Crypto News Monitor",
+    page_title="Top Stories Monitor",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
