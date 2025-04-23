@@ -20,7 +20,10 @@ load_dotenv()
 SERP_API_KEY = os.getenv('SERP_API_KEY')
 
 # Default crypto keywords
-DEFAULT_CRYPTO_KEYWORDS = ["XRP", "Bitcoin", "Ethereum", "Dogecoin", "Solana", "BNB"]
+DEFAULT_CRYPTO_KEYWORDS = [
+    "XRP", "Bitcoin", "Ethereum", "Dogecoin", "Solana", "BNB",
+    "ADA", "SUI", "Bonk", "Floki"
+]
 
 # Define locations
 LOCATIONS = {"US": "us", "UK": "uk", "Germany": "de", "Netherlands": "nl"}
@@ -63,7 +66,7 @@ async def perform_search_async(query: str, location: str) -> list:
         "engine": "google",
         "gl": location,
         "hl": "en",
-        "tbs": "qdr:d",  # news from the past day
+        "tbs": "qdr:d",     # news from the past day
         "sort": "date",
         "num": 10
     }
@@ -80,7 +83,11 @@ async def perform_search_async(query: str, location: str) -> list:
                             position = item.get("position", None)
                             title = item.get("title", "")
                             # Filter out unwanted domains
-                            if any(bad in link for bad in ["reddit.com", "youtube.com", "wikipedia.org", "airbnb.co.uk", "airbnb.com", "yahoo.com", "x.com", "twitter.com"]):
+                            if any(bad in link for bad in [
+                                "reddit.com", "youtube.com", "wikipedia.org",
+                                "airbnb.co.uk", "airbnb.com", "yahoo.com",
+                                "x.com", "twitter.com"
+                            ]):
                                 continue
                             # Only include results with SERP positions 1 or 2
                             try:
@@ -126,7 +133,7 @@ async def run_monitoring_job(selected_cryptos, selected_locations):
                 res["Country"] = loc_name
                 res["Crypto"] = crypto
             all_results.extend(results)
-            
+
             # Update progress
             current_progress += 1
             progress_bar.progress(current_progress / total_combinations)
@@ -156,7 +163,7 @@ def initialize_session_state():
     """Initialize session state variables."""
     # Load saved config
     config = load_config()
-    
+
     if 'last_run' not in st.session_state:
         st.session_state.last_run = config.get('last_run')
     if 'selected_cryptos' not in st.session_state:
@@ -168,17 +175,17 @@ def get_time_since_last_run():
     """Get a formatted string of time since last run."""
     if not st.session_state.last_run:
         return "Never"
-    
+
     try:
         # Convert string to datetime if needed
         last_run = st.session_state.last_run
         if isinstance(last_run, str):
             last_run = datetime.strptime(last_run, "%Y-%m-%d %H:%M:%S")
-        
+
         time_diff = datetime.now() - last_run
         hours = int(time_diff.total_seconds() / 3600)
         minutes = int((time_diff.total_seconds() % 3600) / 60)
-        
+
         if hours > 0:
             return f"{hours} hours {minutes} minutes ago"
         return f"{minutes} minutes ago"
@@ -187,13 +194,13 @@ def get_time_since_last_run():
 
 def main():
     st.title("Top Stories Monitor")
-    
+
     # Initialize session state
     initialize_session_state()
-    
+
     # Create columns for the controls
     col1, col2, col3 = st.columns([2, 2, 1])
-    
+
     with col1:
         # Multi-select for cryptocurrencies
         st.session_state.selected_cryptos = st.multiselect(
@@ -201,7 +208,7 @@ def main():
             DEFAULT_CRYPTO_KEYWORDS,
             default=st.session_state.selected_cryptos
         )
-        
+
     with col2:
         # Multi-select for locations
         st.session_state.selected_locations = st.multiselect(
@@ -209,18 +216,18 @@ def main():
             list(LOCATIONS.keys()),
             default=st.session_state.selected_locations
         )
-    
+
     with col3:
         st.write("")  # Add some spacing
         st.write("")  # Add some spacing
         run_button = st.button("Run Monitor", type="primary", use_container_width=True)
-    
+
     # Load and display previous results
     all_results = load_persisted_results()
-    
+
     # Display results in tabs (All Results first)
     tab1, tab2 = st.tabs(["All Results", "New Results"])
-    
+
     def display_results(results, empty_message):
         if results:
             # Create DataFrame and order columns
@@ -230,7 +237,7 @@ def main():
                 "Title", "URL", "Keyword"
             ]
             df = df[column_order]
-            
+
             # Configure and display the dataframe
             st.dataframe(
                 df,
@@ -272,17 +279,17 @@ def main():
             )
         else:
             st.info(empty_message)
-    
+
     # Display all results first
     with tab1:
         display_results(all_results, "No results found")
-    
+
     with tab2:
         st.info("Run the monitor to see new results")
-    
+
     # Display last run time and warning
     last_run_time = get_time_since_last_run()
-    
+
     if st.session_state.last_run:
         try:
             last_run = st.session_state.last_run
@@ -290,7 +297,7 @@ def main():
                 last_run = datetime.strptime(last_run, "%Y-%m-%d %H:%M:%S")
             time_diff = datetime.now() - last_run
             hours_since_last_run = time_diff.total_seconds() / 3600
-            
+
             if hours_since_last_run < 2:
                 st.warning(
                     f"⏱️ Last run: {last_run_time}\n\n"
@@ -302,37 +309,37 @@ def main():
             st.info(f"⏱️ Last run: {last_run_time}")
     else:
         st.info("⏱️ Last run: Never")
-    
+
     # Convert selected locations to the format needed
     selected_locations_dict = {k: LOCATIONS[k] for k in st.session_state.selected_locations}
-    
+
     if run_button:
         if not SERP_API_KEY:
             st.error("SERP API key not found. Please check your .env file.")
             return
-            
+
         if not st.session_state.selected_cryptos:
             st.warning("Please select at least one cryptocurrency.")
             return
-            
+
         if not st.session_state.selected_locations:
             st.warning("Please select at least one location.")
             return
-            
+
         with st.spinner("Running monitoring job..."):
             new_results, all_results = asyncio.run(
                 run_monitoring_job(st.session_state.selected_cryptos, selected_locations_dict)
             )
-            
+
             # Update and save last run time
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             st.session_state.last_run = current_time
             save_config({"last_run": current_time})
-            
+
             # Update the tabs with new results
             with tab1:
                 display_results(all_results, "No results found")
-                    
+
             with tab2:
                 display_results(new_results, "No new results in this run")
 
