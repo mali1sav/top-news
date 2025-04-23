@@ -6,342 +6,261 @@ import time
 import pandas as pd
 from dotenv import load_dotenv
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Configure the page
-st.set_page_config(
-    page_title="Top Stories Monitor",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+# ──────────────────────────────────────────────  CONFIG  ───────────────────────────────────────────── #
 
-# Load environment variables
+st.set_page_config(page_title="Top Stories Monitor",
+                   layout="wide",
+                   initial_sidebar_state="collapsed")
+
 load_dotenv()
 SERP_API_KEY = os.getenv('SERP_API_KEY')
 
-# Default crypto keywords
 DEFAULT_CRYPTO_KEYWORDS = [
     "XRP", "Bitcoin", "Ethereum", "Dogecoin", "Solana", "BNB",
     "ADA", "SUI", "Bonk", "Floki"
 ]
 
-# Define locations
 LOCATIONS = {"US": "us", "UK": "uk", "Germany": "de", "Netherlands": "nl"}
 
-# Persistence files
 RESULTS_FILE = "results.json"
-CONFIG_FILE = "config.json"
+CONFIG_FILE   = "config.json"
+
+# 100 % unwanted sources / listing-pages / price-feeds
+UNWANTED_PATTERNS = [
+    # social / junk
+    "reddit.com", "youtube.com", "x.com", "twitter.com",
+    # encyclopaedia
+    "wikipedia.org",
+    # travel
+    "airbnb.",
+    # price / chart pages & exchange listings
+    "coinmarketcap.com/currencies",
+    "coingecko.com",
+    "/price/", "/prices/",
+    "coinbase.com/price",
+    "mexc.com/price",
+    "coincheckup.com",
+    "binance.com",
+    "bnb.bg",
+    # random calendars / events
+    "calendar", "events-calendar"
+]
+
+# ────────────────────────────────────────────  PERSISTENCE  ─────────────────────────────────────────── #
 
 def load_config():
-    """Load configuration from file."""
     try:
         with open(CONFIG_FILE, "r") as f:
             return json.load(f)
     except Exception:
         return {"last_run": None}
 
-def save_config(config):
-    """Save configuration to file."""
+def save_config(cfg: dict):
     with open(CONFIG_FILE, "w") as f:
-        json.dump(config, f, indent=2)
+        json.dump(cfg, f, indent=2)
 
 def load_persisted_results():
-    """Load persisted results from local file (if exists)."""
     try:
         with open(RESULTS_FILE, "r") as f:
             return json.load(f)
     except Exception:
         return []
 
-def save_persisted_results(results):
-    """Save results to local file."""
+def save_persisted_results(results: list):
     with open(RESULTS_FILE, "w") as f:
         json.dump(results, f, indent=2)
 
+# ─────────────────────────────────────────────  SERP CALL  ──────────────────────────────────────────── #
+
 async def perform_search_async(query: str, location: str) -> list:
-    """Query SERPAPI for a given query and location."""
     params = {
         "q": query,
         "api_key": SERP_API_KEY,
         "engine": "google",
         "gl": location,
         "hl": "en",
-        "tbs": "qdr:d",     # news from the past day
+        "tbs": "qdr:d",     # past 24 h
         "sort": "date",
         "num": 10
     }
     url = "https://serpapi.com/search"
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, params=params) as resp:
-                if resp.status == 200:
-                    results = await resp.json()
-                    output = []
-                    if "organic_results" in results:
-                        for item in results["organic_results"]:
-                            link = item.get("link", "")
-                            position = item.get("position", None)
-                            title = item.get("title", "")
-                            # Filter out unwanted domains
-                            if any(bad in link for bad in [
-                                "reddit.com", "youtube.com", "wikipedia.org",
-                                "airbnb.co.uk", "airbnb.com", "yahoo.com",
-                                "x.com", "twitter.com"
-                            ]):
-                                continue
-                            # Only include results with SERP positions 1 or 2
-                            try:
-                                pos_int = int(position)
-                                if pos_int not in (1, 2):
-                                    continue
-                            except Exception:
-                                continue
-                            output.append({
-                                "Timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                "Country": None,
-                                "Crypto": None,
-                                "Keyword": query,
-                                "Position": position,
-                                "Title": title,
-                                "URL": link
-                            })
-                    return output
-                else:
+                if resp.status != 200:
                     st.error(f"SERPAPI error: {resp.status}")
                     return []
+
+                results_json = await resp.json()
+                out = []
+                for item in results_json.get("organic_results", []):
+                    link  = item.get("link", "")
+                    title = item.get("title", "")
+                    pos   = item.get("position")
+
+                    # HARD filter: chuck anything that obviously isn't an article
+                    link_low = link.lower()
+                    if any(pat in link_low for pat in UNWANTED_PATTERNS):
+                        continue
+
+                    # keep only SERP pos 1-2
+                    try:
+                        if int(pos) not in (1, 2):
+                            continue
+                    except Exception:
+                        continue
+
+                    out.append({
+                        "Timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "Country":   None,
+                        "Crypto":    None,
+                        "Keyword":   query,
+                        "Position":  pos,
+                        "Title":     title,
+                        "URL":       link
+                    })
+                return out
     except Exception as e:
         st.error(f"Error performing search: {e}")
         return []
 
-def deduplicate_results(new_results, persisted):
-    """Remove duplicates based on URL."""
-    persisted_urls = {item["URL"] for item in persisted}
-    return [res for res in new_results if res["URL"] not in persisted_urls]
+# ───────────────────────────────────────────────  LOGIC  ────────────────────────────────────────────── #
 
-async def run_monitoring_job(selected_cryptos, selected_locations):
-    """Run the monitoring job with selected cryptocurrencies and locations."""
-    all_results = []
-    progress_bar = st.progress(0)
-    total_combinations = len(selected_cryptos) * len(selected_locations)
-    current_progress = 0
+def deduplicate_results(new, old):
+    old_urls = {item["URL"] for item in old}
+    return [r for r in new if r["URL"] not in old_urls]
 
-    for crypto in selected_cryptos:
-        for loc_name, loc_code in selected_locations.items():
-            results = await perform_search_async(crypto, loc_code)
-            # Annotate results with country and crypto info
-            for res in results:
-                res["Country"] = loc_name
-                res["Crypto"] = crypto
-            all_results.extend(results)
+async def run_monitoring_job(cryptos, locs):
+    all_res, pb = [], st.progress(0)
+    total = len(cryptos) * len(locs)
+    done  = 0
 
-            # Update progress
-            current_progress += 1
-            progress_bar.progress(current_progress / total_combinations)
+    for c in cryptos:
+        for loc_name, loc_code in locs.items():
+            res = await perform_search_async(c, loc_code)
+            for r in res:
+                r["Country"] = loc_name
+                r["Crypto"]  = c
+            all_res.extend(res)
 
-    # Deduplicate by URL
-    unique_results = {res["URL"]: res for res in all_results}.values()
-    unique_results = list(unique_results)
+            done += 1
+            pb.progress(done / total)
 
-    # Load previously persisted results
+    unique = list({r["URL"]: r for r in all_res}.values())
     persisted = load_persisted_results()
+    new_res   = deduplicate_results(unique, persisted)
 
-    # Find new results not already persisted
-    new_results = deduplicate_results(unique_results, persisted)
-
-    if new_results:
-        st.success(f"Found {len(new_results)} new result(s)")
+    if new_res:
+        st.success(f"✔ {len(new_res)} new content page(s) found")
     else:
-        st.info("No new results found")
+        st.info("No new results worth translating")
 
-    # Save updated results
-    updated_results = persisted + new_results
-    save_persisted_results(updated_results)
+    save_persisted_results(persisted + new_res)
+    return new_res, persisted + new_res
 
-    return new_results, updated_results
+# ─────────────────────────────────────────────  UI / MAIN  ──────────────────────────────────────────── #
 
-def initialize_session_state():
-    """Initialize session state variables."""
-    # Load saved config
-    config = load_config()
+def init_state():
+    cfg = load_config()
+    st.session_state.setdefault("last_run",           cfg.get("last_run"))
+    st.session_state.setdefault("selected_cryptos",   DEFAULT_CRYPTO_KEYWORDS)
+    st.session_state.setdefault("selected_locations", list(LOCATIONS.keys()))
 
-    if 'last_run' not in st.session_state:
-        st.session_state.last_run = config.get('last_run')
-    if 'selected_cryptos' not in st.session_state:
-        st.session_state.selected_cryptos = DEFAULT_CRYPTO_KEYWORDS
-    if 'selected_locations' not in st.session_state:
-        st.session_state.selected_locations = list(LOCATIONS.keys())
-
-def get_time_since_last_run():
-    """Get a formatted string of time since last run."""
-    if not st.session_state.last_run:
+def fmt_since(ts):
+    if not ts:
         return "Never"
-
     try:
-        # Convert string to datetime if needed
-        last_run = st.session_state.last_run
-        if isinstance(last_run, str):
-            last_run = datetime.strptime(last_run, "%Y-%m-%d %H:%M:%S")
-
-        time_diff = datetime.now() - last_run
-        hours = int(time_diff.total_seconds() / 3600)
-        minutes = int((time_diff.total_seconds() % 3600) / 60)
-
-        if hours > 0:
-            return f"{hours} hours {minutes} minutes ago"
-        return f"{minutes} minutes ago"
+        last = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S") if isinstance(ts, str) else ts
+        diff = datetime.now() - last
+        h, m = divmod(int(diff.total_seconds() / 60), 60)
+        return f"{h} h {m} m ago" if h else f"{m} m ago"
     except Exception:
         return "Never"
 
 def main():
-    st.title("Top Stories Monitor")
+    st.title("Top Stories Monitor (content pages only)")
+    init_state()
 
-    # Initialize session state
-    initialize_session_state()
-
-    # Create columns for the controls
     col1, col2, col3 = st.columns([2, 2, 1])
-
     with col1:
-        # Multi-select for cryptocurrencies
         st.session_state.selected_cryptos = st.multiselect(
-            "Select Cryptocurrencies",
+            "Cryptocurrencies",
             DEFAULT_CRYPTO_KEYWORDS,
             default=st.session_state.selected_cryptos
         )
-
     with col2:
-        # Multi-select for locations
         st.session_state.selected_locations = st.multiselect(
-            "Select Locations",
+            "Regions",
             list(LOCATIONS.keys()),
             default=st.session_state.selected_locations
         )
-
     with col3:
-        st.write("")  # Add some spacing
-        st.write("")  # Add some spacing
-        run_button = st.button("Run Monitor", type="primary", use_container_width=True)
+        st.write("")
+        run_btn = st.button("Run Monitor", type="primary", use_container_width=True)
 
-    # Load and display previous results
     all_results = load_persisted_results()
+    tab_all, tab_new = st.tabs(["All Results", "New Results"])
 
-    # Display results in tabs (All Results first)
-    tab1, tab2 = st.tabs(["All Results", "New Results"])
-
-    def display_results(results, empty_message):
-        if results:
-            # Create DataFrame and order columns
-            df = pd.DataFrame(results)
-            column_order = [
+    def show(df_list, empty_msg):
+        if df_list:
+            df = pd.DataFrame(df_list)[[
                 "Timestamp", "Crypto", "Country", "Position",
                 "Title", "URL", "Keyword"
-            ]
-            df = df[column_order]
-
-            # Configure and display the dataframe
+            ]]
             st.dataframe(
                 df,
-                use_container_width=True,
                 hide_index=True,
+                use_container_width=True,
                 column_config={
-                    "URL": st.column_config.LinkColumn(
-                        "URL",
-                        width="medium",
-                        help="Click to open article"
-                    ),
-                    "Title": st.column_config.TextColumn(
-                        "Title",
-                        width="large",
-                        help="Article title"
-                    ),
-                    "Timestamp": st.column_config.DatetimeColumn(
-                        "Time",
-                        format="D MMM, HH:mm",
-                        width="small"
-                    ),
-                    "Position": st.column_config.NumberColumn(
-                        "Position",
-                        width="small"
-                    ),
-                    "Crypto": st.column_config.TextColumn(
-                        "Crypto",
-                        width="small"
-                    ),
-                    "Country": st.column_config.TextColumn(
-                        "Region",
-                        width="small"
-                    ),
-                    "Keyword": st.column_config.TextColumn(
-                        "Search Term",
-                        width="small"
-                    )
+                    "URL":  st.column_config.LinkColumn("URL",   width="medium"),
+                    "Title":st.column_config.TextColumn("Title", width="large"),
+                    "Timestamp": st.column_config.DatetimeColumn("Time", format="D MMM, HH:mm")
                 }
             )
         else:
-            st.info(empty_message)
+            st.info(empty_msg)
 
-    # Display all results first
-    with tab1:
-        display_results(all_results, "No results found")
+    with tab_all: show(all_results, "No stored articles yet")
+    with tab_new: st.info("Run the monitor to populate")
 
-    with tab2:
-        st.info("Run the monitor to see new results")
-
-    # Display last run time and warning
-    last_run_time = get_time_since_last_run()
-
+    last_run_msg = f"⏱ Last run: {fmt_since(st.session_state.last_run)}"
     if st.session_state.last_run:
-        try:
-            last_run = st.session_state.last_run
-            if isinstance(last_run, str):
-                last_run = datetime.strptime(last_run, "%Y-%m-%d %H:%M:%S")
-            time_diff = datetime.now() - last_run
-            hours_since_last_run = time_diff.total_seconds() / 3600
-
-            if hours_since_last_run < 2:
-                st.warning(
-                    f"⏱️ Last run: {last_run_time}\n\n"
-                    "⚠️ Running too frequently may use up SERP credits. We recommend waiting at least 2 hours between runs."
-                )
-            else:
-                st.info(f"⏱️ Last run: {last_run_time}")
-        except Exception:
-            st.info(f"⏱️ Last run: {last_run_time}")
+        last = datetime.strptime(st.session_state.last_run, "%Y-%m-%d %H:%M:%S")
+        if (datetime.now() - last).total_seconds() < 7200:
+            st.warning(last_run_msg + " – chill for 2 h to save credits")
+        else:
+            st.info(last_run_msg)
     else:
-        st.info("⏱️ Last run: Never")
+        st.info(last_run_msg)
 
-    # Convert selected locations to the format needed
-    selected_locations_dict = {k: LOCATIONS[k] for k in st.session_state.selected_locations}
-
-    if run_button:
+    if run_btn:
         if not SERP_API_KEY:
-            st.error("SERP API key not found. Please check your .env file.")
+            st.error("SERP_API_KEY missing → check .env")
             return
-
         if not st.session_state.selected_cryptos:
-            st.warning("Please select at least one cryptocurrency.")
+            st.warning("Pick at least one coin")
             return
-
         if not st.session_state.selected_locations:
-            st.warning("Please select at least one location.")
+            st.warning("Pick at least one region")
             return
 
-        with st.spinner("Running monitoring job..."):
-            new_results, all_results = asyncio.run(
-                run_monitoring_job(st.session_state.selected_cryptos, selected_locations_dict)
+        with st.spinner("Scraping fresh top-stories…"):
+            new, all_now = asyncio.run(
+                run_monitoring_job(
+                    st.session_state.selected_cryptos,
+                    {k: LOCATIONS[k] for k in st.session_state.selected_locations}
+                )
             )
 
-            # Update and save last run time
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.session_state.last_run = current_time
-            save_config({"last_run": current_time})
+        ts_now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        st.session_state.last_run = ts_now
+        save_config({"last_run": ts_now})
 
-            # Update the tabs with new results
-            with tab1:
-                display_results(all_results, "No results found")
-
-            with tab2:
-                display_results(new_results, "No new results in this run")
+        with tab_all: show(all_now, "No stored articles yet")
+        with tab_new: show(new, "No fresh content this run")
 
 if __name__ == "__main__":
     main()
