@@ -71,7 +71,12 @@ def save_config(cfg: dict):
 def load_persisted_results():
     try:
         with open(RESULTS_FILE, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+        cutoff = datetime.now() - timedelta(days=1)
+        return [
+            r for r in data
+            if datetime.strptime(r["Timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff
+        ]
     except Exception:
         return []
 
