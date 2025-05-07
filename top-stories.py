@@ -18,8 +18,15 @@ load_dotenv()
 SERP_API_KEY = os.getenv('SERP_API_KEY')
 
 DEFAULT_CRYPTO_KEYWORDS = [
-    "XRP", "Bitcoin", "Ethereum", "Dogecoin", "Solana", "BNB",
-    "ADA", "SUI", "Bonk", "Floki"
+    "XRP",
+    "Bitcoin", "BTC",
+    "Ethereum", "ETH",
+    "Dogecoin",
+    "Solana",
+    "BNB",
+    "SUI",
+    "Pi Network",
+    "Shiba Inu"
 ]
 
 LOCATIONS = {"US": "us", "UK": "uk", "Germany": "de", "Netherlands": "nl"}
