@@ -6,7 +6,7 @@ import time
 import pandas as pd
 from dotenv import load_dotenv
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # ──────────────────────────────────────────────  CONFIG  ───────────────────────────────────────────── #
 
@@ -34,15 +34,10 @@ LOCATIONS = {"US": "us", "UK": "uk", "Germany": "de", "Netherlands": "nl"}
 RESULTS_FILE = "results.json"
 CONFIG_FILE   = "config.json"
 
-# 100 % unwanted sources / listing-pages / price-feeds
 UNWANTED_PATTERNS = [
-    # social / junk
     "reddit.com", "youtube.com", "x.com", "twitter.com",
-    # encyclopaedia
     "wikipedia.org",
-    # travel
     "airbnb.",
-    # price / chart pages & exchange listings
     "coinmarketcap.com/currencies",
     "coingecko.com",
     "/price/", "/prices/",
@@ -51,7 +46,6 @@ UNWANTED_PATTERNS = [
     "coincheckup.com",
     "binance.com",
     "bnb.bg",
-    # random calendars / events
     "calendar", "events-calendar"
 ]
 
@@ -72,7 +66,7 @@ def load_persisted_results():
     try:
         with open(RESULTS_FILE, "r") as f:
             data = json.load(f)
-        cutoff = datetime.now() - timedelta(days=1)
+        cutoff = datetime.now() - timedelta(days=2)
         return [
             r for r in data
             if datetime.strptime(r["Timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff
@@ -113,12 +107,10 @@ async def perform_search_async(query: str, location: str) -> list:
                     title = item.get("title", "")
                     pos   = item.get("position")
 
-                    # HARD filter: chuck anything that obviously isn't an article
                     link_low = link.lower()
                     if any(pat in link_low for pat in UNWANTED_PATTERNS):
                         continue
 
-                    # keep only SERP pos 1-2
                     try:
                         if int(pos) not in (1, 2):
                             continue
@@ -161,7 +153,7 @@ async def run_monitoring_job(cryptos, locs):
             done += 1
             pb.progress(done / total)
 
-    unique = list({r["URL"]: r for r in all_res}.values())
+    unique    = list({r["URL"]: r for r in all_res}.values())
     persisted = load_persisted_results()
     new_res   = deduplicate_results(unique, persisted)
 
@@ -227,8 +219,8 @@ def main():
                 hide_index=True,
                 use_container_width=True,
                 column_config={
-                    "URL":  st.column_config.LinkColumn("URL",   width="medium"),
-                    "Title":st.column_config.TextColumn("Title", width="large"),
+                    "URL":       st.column_config.LinkColumn("URL",    width="medium"),
+                    "Title":     st.column_config.TextColumn("Title",  width="large"),
                     "Timestamp": st.column_config.DatetimeColumn("Time", format="D MMM, HH:mm")
                 }
             )
