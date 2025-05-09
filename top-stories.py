@@ -10,12 +10,14 @@ from datetime import datetime, timedelta
 
 # ──────────────────────────────────────────────  CONFIG  ───────────────────────────────────────────── #
 
-st.set_page_config(page_title="Top Stories Monitor",
-                   layout="wide",
-                   initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="Top Stories Monitor",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 load_dotenv()
-SERP_API_KEY = os.getenv('SERP_API_KEY')
+SERP_API_KEY = os.getenv("SERP_API_KEY")
 
 DEFAULT_CRYPTO_KEYWORDS = [
     "XRP",
@@ -26,13 +28,13 @@ DEFAULT_CRYPTO_KEYWORDS = [
     "BNB",
     "SUI",
     "Pi Network",
-    "Shiba Inu"
+    "Shiba Inu",
 ]
 
 LOCATIONS = {"US": "us", "UK": "uk", "Germany": "de", "Netherlands": "nl"}
 
 RESULTS_FILE = "results.json"
-CONFIG_FILE   = "config.json"
+CONFIG_FILE = "config.json"
 
 UNWANTED_PATTERNS = [
     "reddit.com", "youtube.com", "x.com", "twitter.com",
@@ -49,7 +51,7 @@ def load_config():
     try:
         with open(CONFIG_FILE, "r") as f:
             return json.load(f)
-    except Exception:
+    except:
         return {"last_run": None}
 
 def save_config(cfg: dict):
@@ -65,14 +67,14 @@ def load_persisted_results():
             r for r in data
             if datetime.strptime(r["Timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff
         ]
-    except Exception:
+    except:
         return []
 
 def save_persisted_results(results: list):
     with open(RESULTS_FILE, "w") as f:
         json.dump(results, f, indent=2)
 
-# ─────────────────────────────────────────────  SERP CALL  ──────────────────────────────────────────── #
+# ───────────────────────────────────────────────  SERP CALL  ──────────────────────────────────────────── #
 
 async def perform_search_async(query: str, location: str) -> list:
     params = {
@@ -83,7 +85,7 @@ async def perform_search_async(query: str, location: str) -> list:
         "hl": "en",
         "tbs": "qdr:d",
         "sort": "date",
-        "num": 10
+        "num": 10,
     }
     url = "https://serpapi.com/search"
 
@@ -96,9 +98,9 @@ async def perform_search_async(query: str, location: str) -> list:
                 results_json = await resp.json()
                 out = []
                 for item in results_json.get("organic_results", []):
-                    link  = item.get("link", "")
+                    link = item.get("link", "")
                     title = item.get("title", "")
-                    pos   = item.get("position")
+                    pos = item.get("position")
                     if any(pat in link.lower() for pat in UNWANTED_PATTERNS):
                         continue
                     try:
@@ -108,12 +110,12 @@ async def perform_search_async(query: str, location: str) -> list:
                         continue
                     out.append({
                         "Timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "Country":   None,
-                        "Crypto":    None,
-                        "Keyword":   query,
-                        "Position":  pos,
-                        "Title":     title,
-                        "URL":       link
+                        "Country": None,
+                        "Crypto": None,
+                        "Keyword": query,
+                        "Position": pos,
+                        "Title": title,
+                        "URL": link,
                     })
                 return out
     except Exception as e:
@@ -129,21 +131,21 @@ def deduplicate_results(new, old):
 async def run_monitoring_job(cryptos, locs):
     all_res, pb = [], st.progress(0)
     total = len(cryptos) * len(locs)
-    done  = 0
+    done = 0
 
     for c in cryptos:
         for loc_name, loc_code in locs.items():
             res = await perform_search_async(c, loc_code)
             for r in res:
                 r["Country"] = loc_name
-                r["Crypto"]  = c
+                r["Crypto"] = c
             all_res.extend(res)
             done += 1
             pb.progress(done / total)
 
-    unique    = list({r["URL"]: r for r in all_res}.values())
+    unique = list({r["URL"]: r for r in all_res}.values())
     persisted = load_persisted_results()
-    new_res   = deduplicate_results(unique, persisted)
+    new_res = deduplicate_results(unique, persisted)
 
     if new_res:
         st.success(f"✔ {len(new_res)} new content page(s) found")
@@ -157,9 +159,9 @@ async def run_monitoring_job(cryptos, locs):
 
 def init_state():
     cfg = load_config()
-    st.session_state.setdefault("last_run",           cfg.get("last_run"))
-    st.session_state.setdefault("selected_cryptos",   DEFAULT_CRYPTO_KEYWORDS.copy())
-    st.session_state.setdefault("new_coin_input",     "")
+    st.session_state.setdefault("last_run", cfg.get("last_run"))
+    st.session_state.setdefault("selected_cryptos", DEFAULT_CRYPTO_KEYWORDS.copy())
+    st.session_state.setdefault("new_coin_input", "")
     st.session_state.setdefault("selected_locations", list(LOCATIONS.keys()))
 
 def fmt_since(ts):
@@ -179,17 +181,24 @@ def main():
 
     col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
-        # Preloaded + free-entry via text_input & button
+        # build combined options list:
+        combined_options = list(dict.fromkeys(
+            DEFAULT_CRYPTO_KEYWORDS + st.session_state.selected_cryptos
+        ))
         selected = st.multiselect(
             "Cryptocurrencies",
-            DEFAULT_CRYPTO_KEYWORDS,
-            default=st.session_state.selected_cryptos
+            options=combined_options,
+            default=st.session_state.selected_cryptos,
+            help="Pick from defaults or any you’ve added"
         )
-        new_coin = st.text_input("Add coin", key="new_coin_input")
-        if st.button("Add Coin"):
-            if new_coin and new_coin not in selected:
-                selected.append(new_coin.strip())
-                st.session_state.new_coin_input = ""
+
+        new_coin = st.text_input("Add a coin", st.session_state.new_coin_input)
+        if st.button("➕ Add Coin"):
+            coin = new_coin.strip()
+            if coin and coin not in selected:
+                selected.append(coin)
+            st.session_state.new_coin_input = ""
+
         st.session_state.selected_cryptos = selected
 
     with col2:
@@ -221,13 +230,16 @@ def main():
         else:
             st.info(empty_msg)
 
-    with tab_all: show(all_results, "No stored articles yet")
-    with tab_new: st.info("Run the monitor to populate")
+    with tab_all:
+        show(all_results, "No stored articles yet")
+    with tab_new:
+        st.info("Run the monitor to populate")
 
     last_run_msg = f"⏱ Last run: {fmt_since(st.session_state.last_run)}"
     if st.session_state.last_run:
         last = datetime.strptime(st.session_state.last_run, "%Y-%m-%d %H:%M:%S")
-        if (datetime.now() - last).total_seconds() < 7200:
+        age = (datetime.now() - last).total_seconds()
+        if age < 7200:
             st.warning(last_run_msg + " – chill for 2 h to save credits")
         else:
             st.info(last_run_msg)
@@ -257,8 +269,10 @@ def main():
         st.session_state.last_run = ts_now
         save_config({"last_run": ts_now})
 
-        with tab_all: show(all_now, "No stored articles yet")
-        with tab_new: show(new, "No fresh content this run")
+        with tab_all:
+            show(all_now, "No stored articles yet")
+        with tab_new:
+            show(new, "No fresh content this run")
 
 if __name__ == "__main__":
     main()
