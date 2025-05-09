@@ -93,22 +93,19 @@ async def perform_search_async(query: str, location: str) -> list:
                 if resp.status != 200:
                     st.error(f"SERPAPI error: {resp.status}")
                     return []
-
                 results_json = await resp.json()
                 out = []
                 for item in results_json.get("organic_results", []):
                     link  = item.get("link", "")
                     title = item.get("title", "")
                     pos   = item.get("position")
-                    link_low = link.lower()
-                    if any(pat in link_low for pat in UNWANTED_PATTERNS):
+                    if any(pat in link.lower() for pat in UNWANTED_PATTERNS):
                         continue
                     try:
                         if int(pos) not in (1, 2):
                             continue
-                    except Exception:
+                    except:
                         continue
-
                     out.append({
                         "Timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                         "Country":   None,
@@ -162,6 +159,7 @@ def init_state():
     cfg = load_config()
     st.session_state.setdefault("last_run",           cfg.get("last_run"))
     st.session_state.setdefault("selected_cryptos",   DEFAULT_CRYPTO_KEYWORDS.copy())
+    st.session_state.setdefault("new_coin_input",     "" )
     st.session_state.setdefault("selected_locations", list(LOCATIONS.keys()))
 
 def fmt_since(ts):
@@ -172,7 +170,7 @@ def fmt_since(ts):
         diff = datetime.now() - last
         h, m = divmod(int(diff.total_seconds() / 60), 60)
         return f"{h} h {m} m ago" if h else f"{m} m ago"
-    except Exception:
+    except:
         return "Never"
 
 def main():
@@ -181,12 +179,21 @@ def main():
 
     col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
-        st.session_state.selected_cryptos = st.tags_input(
+        # preloaded tags + free entry
+        tags = st.tags_input(
             "Cryptocurrencies",
             value=st.session_state.selected_cryptos,
             suggestions=DEFAULT_CRYPTO_KEYWORDS,
-            help="Preloaded coins shown above; type to add more"
+            help="Type and press Comma (,) or click ➕ to add any coin"
         )
+        # fallback text_input + button if Enter on tags_input fails
+        new_coin = st.text_input("Add a coin manually", key="new_coin_input")
+        if st.button("➕ Add Coin"):
+            if new_coin and new_coin not in tags:
+                tags.append(new_coin)
+                st.session_state.new_coin_input = ""
+        st.session_state.selected_cryptos = tags
+
     with col2:
         st.session_state.selected_locations = st.multiselect(
             "Regions",
