@@ -36,17 +36,11 @@ CONFIG_FILE   = "config.json"
 
 UNWANTED_PATTERNS = [
     "reddit.com", "youtube.com", "x.com", "twitter.com",
-    "wikipedia.org",
-    "airbnb.",
-    "coinmarketcap.com/currencies",
-    "coingecko.com",
-    "/price/", "/prices/",
-    "coinbase.com/price",
-    "mexc.com/price",
-    "coincheckup.com",
-    "binance.com",
-    "bnb.bg",
-    "calendar", "events-calendar"
+    "wikipedia.org", "airbnb.",
+    "coinmarketcap.com/currencies", "coingecko.com",
+    "/price/", "/prices/", "coinbase.com/price",
+    "mexc.com/price", "coincheckup.com", "binance.com",
+    "bnb.bg", "calendar", "events-calendar"
 ]
 
 # ────────────────────────────────────────────  PERSISTENCE  ─────────────────────────────────────────── #
@@ -87,7 +81,7 @@ async def perform_search_async(query: str, location: str) -> list:
         "engine": "google",
         "gl": location,
         "hl": "en",
-        "tbs": "qdr:d",     # past 24 h
+        "tbs": "qdr:d",
         "sort": "date",
         "num": 10
     }
@@ -106,11 +100,9 @@ async def perform_search_async(query: str, location: str) -> list:
                     link  = item.get("link", "")
                     title = item.get("title", "")
                     pos   = item.get("position")
-
                     link_low = link.lower()
                     if any(pat in link_low for pat in UNWANTED_PATTERNS):
                         continue
-
                     try:
                         if int(pos) not in (1, 2):
                             continue
@@ -149,7 +141,6 @@ async def run_monitoring_job(cryptos, locs):
                 r["Country"] = loc_name
                 r["Crypto"]  = c
             all_res.extend(res)
-
             done += 1
             pb.progress(done / total)
 
@@ -170,14 +161,14 @@ async def run_monitoring_job(cryptos, locs):
 def init_state():
     cfg = load_config()
     st.session_state.setdefault("last_run",           cfg.get("last_run"))
-    st.session_state.setdefault("selected_cryptos",   DEFAULT_CRYPTO_KEYWORDS)
+    st.session_state.setdefault("selected_cryptos",   DEFAULT_CRYPTO_KEYWORDS.copy())
     st.session_state.setdefault("selected_locations", list(LOCATIONS.keys()))
 
 def fmt_since(ts):
     if not ts:
         return "Never"
     try:
-        last = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S") if isinstance(ts, str) else ts
+        last = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
         diff = datetime.now() - last
         h, m = divmod(int(diff.total_seconds() / 60), 60)
         return f"{h} h {m} m ago" if h else f"{m} m ago"
@@ -190,10 +181,11 @@ def main():
 
     col1, col2, col3 = st.columns([2, 2, 1])
     with col1:
-        st.session_state.selected_cryptos = st.multiselect(
+        st.session_state.selected_cryptos = st.tags_input(
             "Cryptocurrencies",
-            DEFAULT_CRYPTO_KEYWORDS,
-            default=st.session_state.selected_cryptos
+            value=st.session_state.selected_cryptos,
+            suggestions=DEFAULT_CRYPTO_KEYWORDS,
+            help="Preloaded coins shown above; type to add more"
         )
     with col2:
         st.session_state.selected_locations = st.multiselect(
@@ -208,20 +200,17 @@ def main():
     all_results = load_persisted_results()
     tab_all, tab_new = st.tabs(["All Results", "New Results"])
 
-    def show(df_list, empty_msg):
-        if df_list:
-            df = pd.DataFrame(df_list)[[
-                "Timestamp", "Crypto", "Country", "Position",
-                "Title", "URL", "Keyword"
+    def show(results, empty_msg):
+        if results:
+            df = pd.DataFrame(results)[[
+                "Timestamp","Crypto","Country","Position","Title","URL","Keyword"
             ]]
             st.dataframe(
-                df,
-                hide_index=True,
-                use_container_width=True,
+                df, hide_index=True, use_container_width=True,
                 column_config={
                     "URL":       st.column_config.LinkColumn("URL",    width="medium"),
                     "Title":     st.column_config.TextColumn("Title",  width="large"),
-                    "Timestamp": st.column_config.DatetimeColumn("Time", format="D MMM, HH:mm")
+                    "Timestamp": st.column_config.DatetimeColumn("Time",  format="D MMM, HH:mm")
                 }
             )
         else:
