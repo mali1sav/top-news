@@ -65,7 +65,7 @@ def load_persisted_results():
         cutoff = datetime.now() - timedelta(days=2)
         return [
             r for r in data
-            if datetime.strptime(r["Timestamp"], "%Y-%m-%d %H:%M:%S") >= cutoff
+            if datetime.strptime(r["Timestamp"], "%Y-%m-%d %H:%M") >= cutoff
         ]
     except:
         return []
@@ -109,9 +109,9 @@ async def perform_search_async(query: str, location: str) -> list:
                     except:
                         continue
                     out.append({
-                        "Timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "Timestamp": time.strftime("%Y-%m-%d %H:%M"),
                         "Country": None,
-                        "Crypto": None,
+                        "Crypto": None, # Still store it for potential future use, but won't display
                         "Keyword": query,
                         "Position": pos,
                         "Title": title,
@@ -148,7 +148,7 @@ async def run_monitoring_job(cryptos, locs):
     new_res = deduplicate_results(unique, persisted)
 
     if new_res:
-        st.success(f"✔ {len(new_res)} new content page(s) found")
+        st.success(f"{len(new_res)} new content page(s) found")
     else:
         st.info("No new results worth translating")
 
@@ -159,7 +159,26 @@ async def run_monitoring_job(cryptos, locs):
 
 def init_state():
     cfg = load_config()
-    st.session_state.setdefault("last_run", cfg.get("last_run"))
+    last_run_from_config = cfg.get("last_run")
+    
+    if last_run_from_config:
+        try:
+            # Attempt to parse with the new format first (HH:MM)
+            datetime.strptime(last_run_from_config, "%Y-%m-%d %H:%M")
+            # If successful, it's already in the correct format or compatible
+            st.session_state.setdefault("last_run", last_run_from_config)
+        except ValueError:
+            # If it fails, try parsing with the old format (HH:MM:SS)
+            try:
+                dt_object = datetime.strptime(last_run_from_config, "%Y-%m-%d %H:%M:%S")
+                # Convert to new format string and store
+                st.session_state.setdefault("last_run", dt_object.strftime("%Y-%m-%d %H:%M"))
+            except ValueError:
+                # If both fail, it's an unexpected format, store as None or handle as error
+                st.session_state.setdefault("last_run", None) 
+    else:
+        st.session_state.setdefault("last_run", None)
+
     st.session_state.setdefault("selected_cryptos", DEFAULT_CRYPTO_KEYWORDS.copy())
     st.session_state.setdefault("new_coin_input", "")
     st.session_state.setdefault("selected_locations", list(LOCATIONS.keys()))
@@ -168,7 +187,7 @@ def fmt_since(ts):
     if not ts:
         return "Never"
     try:
-        last = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        last = datetime.strptime(ts, "%Y-%m-%d %H:%M")
         diff = datetime.now() - last
         h, m = divmod(int(diff.total_seconds() / 60), 60)
         return f"{h} h {m} m ago" if h else f"{m} m ago"
@@ -257,7 +276,7 @@ def main():
             disable_run_all = False
             next_run_available_in = ""
             if st.session_state.last_run:
-                last_run_dt = datetime.strptime(st.session_state.last_run, "%Y-%m-%d %H:%M:%S")
+                last_run_dt = datetime.strptime(st.session_state.last_run, "%Y-%m-%d %H:%M")
                 time_since_last_run = datetime.now() - last_run_dt
                 if time_since_last_run < timedelta(hours=2):
                     disable_run_all = True
@@ -278,23 +297,35 @@ def main():
                 info_message += f" {next_run_available_in}"
             st.info(info_message)
 
-    # ────────────────────────────────────────────  RESULTS  ───────────────────────────────────────────── #
-
+    # ────────────────────────────────────────────  RESULTS  ─────────────────────────────────────────────
     results_placeholder = st.empty()
+
+    # Initial display of results
     persisted_results = load_persisted_results()
     if persisted_results:
-        results_df = pd.DataFrame(persisted_results).sort_values(by="Timestamp", ascending=False)
-        results_placeholder.dataframe(results_df, use_container_width=True, height=min(500, len(results_df) * 35 + 38))
+        df = pd.DataFrame(persisted_results).sort_values(by="Timestamp", ascending=False)
+        # Select and order columns for display
+        display_df_initial = df[["Timestamp", "Country", "Keyword", "Position", "Title", "URL"]]
+        results_placeholder.data_editor(
+            display_df_initial, 
+            use_container_width=True, 
+            height=min(500, len(display_df_initial) * 35 + 38),
+            column_config={
+                "URL": st.column_config.LinkColumn("URL")
+            },
+            disabled=True # Make it read-only
+        )
     else:
-        results_placeholder.info("No results yet. Run the monitor to fetch news.")
+        results_placeholder.info("No results yet. Run the monitor to fetch data.")
 
     if run_all_btn or quick_run_crypto:
+        # This block now correctly starts after the initial display
         cfg = load_config()
         now = datetime.now()
 
         # The button disabling logic should prevent this, but as a safeguard:
         if run_all_btn and st.session_state.last_run:
-            last_run_dt = datetime.strptime(st.session_state.last_run, "%Y-%m-%d %H:%M:%S")
+            last_run_dt = datetime.strptime(st.session_state.last_run, "%Y-%m-%d %H:%M")
             if datetime.now() - last_run_dt < timedelta(hours=2):
                 st.warning("Full run initiated too soon. Please wait for the cooldown. This should have been disabled.")
                 st.stop()
@@ -320,15 +351,27 @@ def main():
                 run_monitoring_job(cryptos_to_run, locs_to_run)
             )
         
-        if all_results:
-            all_results_df = pd.DataFrame(all_results).sort_values(by="Timestamp", ascending=False)
-            results_placeholder.dataframe(all_results_df, use_container_width=True, height=min(500, len(all_results_df) * 35 + 38))
+        # After the job, results.json is updated. Reload and display to ensure immediate consistency.
+        current_display_results = load_persisted_results()
+        if current_display_results:
+            current_display_df = pd.DataFrame(current_display_results).sort_values(by="Timestamp", ascending=False)
+            # Select and order columns for display
+            display_df_after_run = current_display_df[["Timestamp", "Country", "Keyword", "Position", "Title", "URL"]]
+            results_placeholder.data_editor(
+                display_df_after_run, 
+                use_container_width=True, 
+                height=min(500, len(display_df_after_run) * 35 + 38),
+                column_config={
+                    "URL": st.column_config.LinkColumn("URL")
+                },
+                disabled=True # Make it read-only
+            )
         else:
-            results_placeholder.info("No results found for the current selection.")
+            results_placeholder.info("No results to display after the run.")
 
         # Update last_run time only for full runs
         if run_all_btn:
-            st.session_state.last_run = now.strftime("%Y-%m-%d %H:%M:%S")
+            st.session_state.last_run = now.strftime("%Y-%m-%d %H:%M")
             save_config({"last_run": st.session_state.last_run})
         
         if quick_run_crypto:
